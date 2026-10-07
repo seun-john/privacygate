@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="PrivacyGate logo" width="420">
+</p>
+
 # PrivacyGate
 
 Redact sensitive values from text before you paste it into an AI service.
