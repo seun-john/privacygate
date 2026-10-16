@@ -33,7 +33,9 @@ pip install git+https://github.com/seun-john/privacygate.git
 | `privacygate restore FILE -m MAP -r OUT` | Put the originals back using a mapping saved by `--mapping-out`. |
 | `privacygate scan input.json` | Redact the `text` field of a JSON file (`{"text": "...", "confidential_terms": [...]}`) and print the report. |
 
-Every command also takes `-o report.json`, `--html report.html` and `--strict`. With `--strict`, the exit code is 1 when anything was redacted, which suits a CI step that blocks text containing secrets. Exit codes: 0 completed, 1 strict findings, 2 unusable input.
+Every command also takes `-o report.json`, `--html report.html` and `--strict`. With `--strict`, the exit code is 1 when anything was redacted, which suits a CI step that blocks text containing secrets. Exit codes: 0 completed, 1 strict findings, 2 unusable input, 3 `--min-coverage` was not met.
+
+**Coverage.** `scan` and `redact` add a `coverage` object and print a line on stderr, for example `coverage: decided 4 of 4 values`. The items are the distinct values the patterns found and redacted; `suppressed` counts the matches an allow list left in the text. Names, addresses and other free text are not looked for unless listed as confidential terms, and the `notes` say so every time. `--min-coverage PCT` exits 3 when fewer than PCT percent of items were decided, which includes a text in which nothing was found.
 
 The same value always gets the same placeholder within one run, so a model can still tell that two mentions are the same person or number. The report counts what was redacted by kind and never repeats the original values.
 

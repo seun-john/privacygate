@@ -254,6 +254,64 @@ def test_blank_allow_pattern_rejected(tmp_path: Path) -> None:
     assert main(["scan", str(src)]) == 2
 
 
+def scan_json(tmp_path: Path, capsys: pytest.CaptureFixture[str], **fields: object) -> dict:
+    src = tmp_path / "in.json"
+    src.write_text(json.dumps(fields), encoding="utf-8")
+    assert main(["scan", str(src)]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def test_coverage_counts_distinct_values_and_what_the_allow_list_kept(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = scan_json(
+        tmp_path,
+        capsys,
+        text="a@b.com, a@b.com, c@d.com, call 08031234567, help@x.example and info@x.example",
+        allow_role_addresses=True,
+    )
+    block = out["coverage"]
+    assert (block["unit"], block["items"], block["decided"], block["undecided"]) == (
+        "values",
+        3,
+        3,
+        0,
+    )
+    assert block["reasons"] == {} and block["suppressed"] == 2
+    assert "found only if listed" in block["notes"][0]
+
+
+def test_coverage_of_a_clean_text_is_empty_but_still_carries_the_caveat(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    block = scan_json(tmp_path, capsys, text="Nothing sensitive here.")["coverage"]
+    assert (block["items"], block["decided"], block["suppressed"]) == (0, 0, 0)
+    assert block["notes"]
+
+
+def test_min_coverage_and_the_summary_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = tmp_path / "in.json"
+    src.write_text(json.dumps({"text": "mail a@b.com"}), encoding="utf-8")
+    assert main(["scan", str(src), "--min-coverage", "100"]) == 0
+    assert "coverage: decided 1 of 1 values" in capsys.readouterr().err
+    clean = tmp_path / "clean.json"
+    clean.write_text(json.dumps({"text": "nothing"}), encoding="utf-8")
+    assert main(["scan", str(clean), "--min-coverage", "1"]) == 3  # nothing was examined
+    assert main(["scan", str(clean)]) == 0
+
+
+def test_restore_has_no_coverage_block(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    note, clean, mapping = tmp_path / "n.txt", tmp_path / "c.txt", tmp_path / "m.json"
+    note.write_text("a@b.com", encoding="utf-8")
+    assert main(["redact", str(note), "-r", str(clean), "--mapping-out", str(mapping)]) == 0
+    capsys.readouterr()
+    back = tmp_path / "b.txt"
+    assert main(["restore", str(clean), "-m", str(mapping), "-r", str(back)]) == 0
+    assert "coverage" not in json.loads(capsys.readouterr().out)
+
+
 def test_cli_refuses_to_overwrite_input(tmp_path: Path) -> None:
     src = tmp_path / "note.txt"
     src.write_text("a@b.com", encoding="utf-8")

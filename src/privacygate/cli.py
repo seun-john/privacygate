@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .core import InputError, finding, load, report, require
+from .core import InputError, coverage, finding, load, report, require
 from .redact import NO_ALLOW, Allow, redact_allowing, restore
 from .runner import Command, main_wrapper, run
 
@@ -56,6 +56,16 @@ def _summarise(
                 **extra,
             )
         ],
+        coverage=coverage(
+            "values",
+            len(mapping),
+            len(mapping),
+            suppressed=sum(kept.values()),
+            notes=[
+                "only patterned values were looked for; names, addresses and other free text "
+                "are found only if listed as confidential terms"
+            ],
+        ),
         scope="pattern matching only; names and addresses need explicit confidential terms",
     )
     return result, clean, mapping
