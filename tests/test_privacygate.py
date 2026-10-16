@@ -7,7 +7,7 @@ import pytest
 
 from privacygate.cli import main
 from privacygate.core import InputError
-from privacygate.redact import redact, restore
+from privacygate.redact import Allow, redact, redact_allowing, restore
 
 
 def kinds(text: str) -> set[str]:
@@ -139,6 +139,119 @@ def test_cli_redact_then_restore(tmp_path: Path) -> None:
     )
     assert code == 0
     assert back.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
+
+
+def test_role_addresses_are_redacted_unless_allowed() -> None:
+    assert redact("write to support@brightwave.example")[0] == "write to [EMAIL_001]"
+    clean, mapping, kept = redact_allowing(
+        "write to support@brightwave.example", allow=Allow(role_addresses=True)
+    )
+    assert clean == "write to support@brightwave.example"
+    assert mapping == {}
+    assert kept == {"EMAIL": 1}
+
+
+def test_allowed_role_address_does_not_protect_a_personal_address() -> None:
+    text = "ask info@acme.example or ada.obi@acme.example"
+    clean, mapping, kept = redact_allowing(text, allow=Allow(role_addresses=True))
+    assert clean == "ask info@acme.example or [EMAIL_001]"
+    assert mapping == {"[EMAIL_001]": "ada.obi@acme.example"}
+    assert kept == {"EMAIL": 1}
+
+
+def test_role_address_with_plus_tag_and_capitals() -> None:
+    clean, _, kept = redact_allowing("Support+vip@Acme.example", allow=Allow(role_addresses=True))
+    assert clean == "Support+vip@Acme.example"
+    assert kept == {"EMAIL": 1}
+
+
+def test_glob_patterns_allow_a_domain_and_a_helpline_prefix() -> None:
+    allow = Allow(patterns=("recon@ledgerline.example", "+234 1 555 *"))
+    text = "recon@ledgerline.example, helpline +234 1 555 0111, mobile +234 803 123 4567"
+    clean, mapping, kept = redact_allowing(text, allow=allow)
+    assert clean == "recon@ledgerline.example, helpline +234 1 555 0111, mobile [PHONE_001]"
+    assert list(mapping.values()) == ["+234 803 123 4567"]
+    assert kept == {"EMAIL": 1, "PHONE": 1}
+
+
+def test_allow_list_can_never_release_secrets_ids_or_cards() -> None:
+    allow = Allow(role_addresses=True, patterns=("*",))
+    for text, kind in [
+        ("password: hunter2", "PASSWORD"),
+        ("key sk-abcdefghijklmnopqrstuv", "TOKEN"),
+        ("my BVN is 12345678901", "NATIONAL_ID"),
+        ("card 4111 1111 1111 1111 expires", "CARD"),
+        ("account number 0123456789 at the bank", "BANK_ACCOUNT"),
+    ]:
+        _, mapping, kept = redact_allowing(text, allow=allow)
+        assert kind in {k[1:].rsplit("_", 1)[0] for k in mapping}, text
+        assert kept == {}, text
+
+
+def test_confidential_terms_win_over_the_allow_list() -> None:
+    allow = Allow(patterns=("*@acme.example",))
+    clean, _, _ = redact_allowing("mail hr@acme.example", ["hr@acme.example"], allow)
+    assert "hr@acme.example" not in clean
+
+
+def test_cli_scan_reports_what_the_allow_list_kept(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = tmp_path / "in.json"
+    src.write_text(
+        json.dumps(
+            {
+                "text": "support@x.example and ada@x.example",
+                "allow_role_addresses": True,
+                "allow": ["nobody@*"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert main(["scan", str(src)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["redacted_text"] == "support@x.example and [EMAIL_001]"
+    assert out["findings"][0]["evidence"]["allowed_kept"] == {"EMAIL": 1}
+
+
+def test_cli_scan_without_allow_has_no_allowed_kept_field(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = tmp_path / "in.json"
+    src.write_text(json.dumps({"text": "support@x.example"}), encoding="utf-8")
+    assert main(["scan", str(src)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["redacted_text"] == "[EMAIL_001]"
+    assert "allowed_kept" not in json.dumps(out)
+
+
+def test_cli_redact_with_allow_options(tmp_path: Path) -> None:
+    src = tmp_path / "note.txt"
+    src.write_text("info@x.example, help +234 1 555 0142, ada@x.example", encoding="utf-8")
+    allow_file = tmp_path / "allow.txt"
+    allow_file.write_text("+234 1 555 *\n", encoding="utf-8")
+    clean = tmp_path / "clean.txt"
+    code = main(
+        [
+            "redact",
+            str(src),
+            "-r",
+            str(clean),
+            "--allow-role-addresses",
+            "--allow-file",
+            str(allow_file),
+            "-o",
+            str(tmp_path / "rep.json"),
+        ]
+    )
+    assert code == 0
+    assert clean.read_text(encoding="utf-8") == "info@x.example, help +234 1 555 0142, [EMAIL_001]"
+
+
+def test_blank_allow_pattern_rejected(tmp_path: Path) -> None:
+    src = tmp_path / "in.json"
+    src.write_text(json.dumps({"text": "x", "allow": [" "]}), encoding="utf-8")
+    assert main(["scan", str(src)]) == 2
 
 
 def test_cli_refuses_to_overwrite_input(tmp_path: Path) -> None:

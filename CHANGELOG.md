@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Opt-in allow list for shared mailboxes and helplines: `--allow-role-addresses`, `--allow GLOB`, `--allow-file` (and `allow_role_addresses` / `allow` in `scan` input). Allowed values stay in the text and are counted in the report as `allowed_kept`. Only emails and phone numbers can be allowed. Default behaviour is unchanged.
+- New `redact_allowing()` returns the kept counts; `redact()` is unchanged.
+
 ## 0.1.0
 
 First release.

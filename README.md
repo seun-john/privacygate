@@ -37,6 +37,18 @@ Every command also takes `-o report.json`, `--html report.html` and `--strict`. 
 
 The same value always gets the same placeholder within one run, so a model can still tell that two mentions are the same person or number. The report counts what was redacted by kind and never repeats the original values.
 
+## Shared mailboxes and helplines
+
+Role mailboxes (`support@`, `hr@`) and published helplines name a function, not a person, but they look like personal data, so they are redacted by default. To keep them in the text:
+
+| Option | Effect |
+| --- | --- |
+| `--allow-role-addresses` | Leave addresses whose local part is a common role name (`info`, `support`, `help`, `billing`, `hr`, `noreply`, and similar; see `ROLE_LOCAL_PARTS` in `redact.py`). A `+tag` suffix is ignored. |
+| `--allow GLOB` | Leave any email or phone number matching a case-insensitive glob, for example `recon@example.org`, `*@example.org` or `+234 1 555 *`. Repeatable. |
+| `--allow-file F` | The same globs, one per line. |
+
+In `scan` input the same settings are `"allow_role_addresses": true` and `"allow": [...]`. Allowed values stay in the output text; the report states how many were kept per kind (`allowed_kept`) and never lists them. Only `EMAIL` and `PHONE` can be allowed: passwords, tokens, keys, national IDs, bank accounts and card numbers are always redacted, and a confidential term always wins over an allow rule. A personal address at the same domain as an allowed role address is still redacted.
+
 ## What it detects
 
 | Kind | Rule |

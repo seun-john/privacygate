@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .core import InputError, finding, load, report, require
-from .redact import redact, restore
+from .redact import NO_ALLOW, Allow, redact_allowing, restore
 from .runner import Command, main_wrapper, run
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -27,12 +27,24 @@ def _read_text(path: str) -> str:
         raise InputError(f"{path} is not valid UTF-8 text") from exc
 
 
-def _summarise(text: str, terms: list[str]) -> tuple[dict[str, Any], str, dict[str, str]]:
-    clean, mapping = redact(text, terms)
+def _build_allow(role_addresses: bool, patterns: list[Any]) -> Allow:
+    if not all(isinstance(p, str) and p.strip() for p in patterns):
+        raise InputError("Allow patterns must be non-empty strings")
+    return Allow(role_addresses=bool(role_addresses), patterns=tuple(p.strip() for p in patterns))
+
+
+def _summarise(
+    text: str, terms: list[str], allow: Allow = NO_ALLOW
+) -> tuple[dict[str, Any], str, dict[str, str]]:
+    clean, mapping, kept = redact_allowing(text, terms, allow)
     kinds: dict[str, int] = {}
     for placeholder in mapping:
         kind = placeholder[1:].rsplit("_", 1)[0]
         kinds[kind] = kinds.get(kind, 0) + 1
+    extra: dict[str, Any] = {}
+    if allow.role_addresses or allow.patterns:
+        # Allowed values stay in the text. They are counted so the choice is visible.
+        extra["allowed_kept"] = kept
     result = report(
         "PrivacyGate",
         [
@@ -41,6 +53,7 @@ def _summarise(text: str, terms: list[str]) -> tuple[dict[str, Any], str, dict[s
                 "Pattern screening is incomplete; read the output before sharing it.",
                 distinct_values=len(mapping),
                 by_kind=kinds,
+                **extra,
             )
         ],
         scope="pattern matching only; names and addresses need explicit confidential terms",
@@ -53,7 +66,11 @@ def _scan(args: argparse.Namespace, data: Any) -> dict[str, Any]:
     terms = data.get("confidential_terms", [])
     if not isinstance(terms, list):
         raise InputError("'confidential_terms' must be an array")
-    result, clean, _ = _summarise(text, terms)
+    patterns = data.get("allow", [])
+    if not isinstance(patterns, list):
+        raise InputError("'allow' must be an array")
+    allow = _build_allow(data.get("allow_role_addresses", False), patterns)
+    result, clean, _ = _summarise(text, terms, allow)
     result["redacted_text"] = clean
     return result
 
@@ -62,10 +79,14 @@ def _redact_file(args: argparse.Namespace, data: Any) -> dict[str, Any]:
     terms = list(args.term or [])
     if args.terms_file:
         terms += [t for t in _read_text(args.terms_file).splitlines() if t.strip()]
+    patterns = list(args.allow or [])
+    if args.allow_file:
+        patterns += [t for t in _read_text(args.allow_file).splitlines() if t.strip()]
+    allow = _build_allow(args.allow_role_addresses, patterns)
     target = Path(args.redacted_out)
     if target.resolve() == Path(args.file).resolve():
         raise InputError("--redacted-out must not overwrite the input file")
-    result, clean, mapping = _summarise(_read_text(args.file), terms)
+    result, clean, mapping = _summarise(_read_text(args.file), terms, allow)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(clean, encoding="utf-8", newline="\n")
     result["redacted_file"] = str(target)
@@ -108,6 +129,23 @@ COMMANDS = {
             ),
             (("--term", "-t"), {"action": "append", "help": "confidential term (repeatable)"}),
             (("--terms-file",), {"help": "file with one confidential term per line"}),
+            (
+                ("--allow-role-addresses",),
+                {
+                    "action": "store_true",
+                    "help": "leave role mailboxes such as info@ and support@ in the text "
+                    "(counted in the report)",
+                },
+            ),
+            (
+                ("--allow",),
+                {
+                    "action": "append",
+                    "help": "leave an email or phone number matching this case-insensitive glob "
+                    "in the text, e.g. '*@example.org' or '+234 1 555 *' (repeatable)",
+                },
+            ),
+            (("--allow-file",), {"help": "file with one allow glob per line"}),
             (
                 ("--mapping-out",),
                 {"help": "save placeholder-to-original mapping (contains secrets)"},

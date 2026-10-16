@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
+from fnmatch import fnmatchcase
 
 from .core import InputError
 
@@ -62,7 +64,53 @@ def _luhn(digits: str) -> bool:
     return total % 10 == 0
 
 
-def _spans(text: str, terms: Iterable[str]) -> list[tuple[int, int, str]]:
+# Shared mailboxes name a function, not a person. Only used when the caller opts in.
+ROLE_LOCAL_PARTS = frozenset(
+    {
+        *("info", "support", "help", "helpdesk", "contact", "contactus", "enquiries", "inquiries"),
+        *("sales", "admin", "administrator", "office", "hello", "hi", "team", "reception"),
+        *("noreply", "no-reply", "donotreply", "do-not-reply", "feedback", "service"),
+        *("billing", "accounts", "accounting", "ap", "ar", "finance", "payroll", "orders", "order"),
+        *("hr", "people", "careers", "jobs", "recruitment", "admissions", "records", "intake"),
+        *("press", "media", "marketing", "partnerships", "events", "customercare", "care"),
+        *("customerservice", "security", "abuse", "postmaster", "webmaster", "privacy", "legal"),
+        *("compliance", "it", "itdesk", "ops", "oncall", "platform"),
+    }
+)
+
+# Only these kinds can be allowed. Secrets, keys, IDs, account and card numbers never can.
+ALLOWABLE_KINDS = frozenset({"EMAIL", "PHONE"})
+
+
+@dataclass(frozen=True)
+class Allow:
+    """Values that look personal but are known to be shared (role mailboxes, helplines).
+
+    `patterns` are case-insensitive globs matched against the whole value, for example
+    "*@ledgerline.example" or "+234 1 555 *". `role_addresses` allows the built-in list of
+    role mailbox names such as info@ and support@. Allowed values are left in the text and
+    counted in the report; nothing is dropped silently.
+    """
+
+    role_addresses: bool = False
+    patterns: tuple[str, ...] = ()
+
+    def permits(self, kind: str, value: str) -> bool:
+        if kind not in ALLOWABLE_KINDS:
+            return False
+        if self.role_addresses and kind == "EMAIL":
+            local = value.rsplit("@", 1)[0].lower().split("+", 1)[0]
+            if local in ROLE_LOCAL_PARTS:
+                return True
+        return any(fnmatchcase(value.lower(), p.lower()) for p in self.patterns)
+
+
+NO_ALLOW = Allow()
+
+
+def _spans(
+    text: str, terms: Iterable[str], allow: Allow = NO_ALLOW, kept: dict[str, int] | None = None
+) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = []
     for kind, pattern, group in PATTERNS:
         for match in re.finditer(pattern, text):
@@ -71,6 +119,10 @@ def _spans(text: str, terms: Iterable[str]) -> list[tuple[int, int, str]]:
                 if not 13 <= len(digits) <= 19 or not _luhn(digits):
                     continue
             start, end = match.span(group)
+            if allow.permits(kind, text[start:end]):
+                if kept is not None:
+                    kept[kind] = kept.get(kind, 0) + 1
+                continue
             spans.append((start, end, kind))
     for term in terms:
         if not isinstance(term, str) or not term.strip():
@@ -83,9 +135,18 @@ def _spans(text: str, terms: Iterable[str]) -> list[tuple[int, int, str]]:
 
 def redact(text: str, terms: Iterable[str] = ()) -> tuple[str, dict[str, str]]:
     """Return (redacted text, {placeholder: original}). Same value, same placeholder."""
+    clean, mapping, _ = redact_allowing(text, terms)
+    return clean, mapping
+
+
+def redact_allowing(
+    text: str, terms: Iterable[str] = (), allow: Allow = NO_ALLOW
+) -> tuple[str, dict[str, str], dict[str, int]]:
+    """Like `redact`, also returning how many matches the allow list left in the text, by kind."""
+    kept: dict[str, int] = {}
     chosen: list[tuple[int, int, str]] = []
     last = -1
-    for start, end, kind in sorted(_spans(text, terms), key=lambda x: (x[0], -x[1])):
+    for start, end, kind in sorted(_spans(text, terms, allow, kept), key=lambda x: (x[0], -x[1])):
         if start >= last:
             chosen.append((start, end, kind))
             last = end
@@ -107,7 +168,7 @@ def redact(text: str, terms: Iterable[str] = ()) -> tuple[str, dict[str, str]]:
         pieces.extend([text[pos:start], by_value[key]])
         pos = end
     pieces.append(text[pos:])
-    return "".join(pieces), mapping
+    return "".join(pieces), mapping, kept
 
 
 def restore(text: str, mapping: dict[str, str]) -> str:
